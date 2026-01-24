@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Stream</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>📺 Canais</h1>
+<div id="grid"></div>
+
+<script>
+fetch("/api/canais")
+  .then(res => res.json())
+  .then(data => {
+    const grid = document.getElementById("grid");
+    data.forEach(c => {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `<p>${c.nome}</p>`;
+      card.onclick = () => {
+        window.open(c.url, "_blank");
+      };
+      grid.appendChild(card);
+    });
+  });
+</script>
+
+</body>
+</html>
