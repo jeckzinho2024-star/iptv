@@ -1,31 +1,203 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <title>Stream</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Streaming</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; background:#0b0b0b; color:#fff }
+    header { padding:16px; display:flex; align-items:center; gap:16px; position:sticky; top:0; background:#0b0b0b; z-index:10 }
+    h1 { margin:0 }
+    input { background:#1a1a1a; border:1px solid #333; color:#fff; padding:8px; border-radius:6px }
+    .player { padding:16px }
+    video { width:100%; max-height:70vh; border-radius:12px }
+    .category { padding:0 16px }
+    .category h2 { margin:24px 0 8px }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px }
+    .card { background:#141414; padding:10px; border-radius:10px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:8px }
+    .card:hover { background:#1f1f1f }
+    .logo { width:100%; height:120px; object-fit:contain; background:#000; border-radius:6px }
+    .name { font-size:13px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+    .footer { padding:24px; font-size:12px; color:#777 }
+  </style>
 </head>
 <body>
 
-<h1>📺 Canais</h1>
-<div id="grid"></div>
+<header>
+  <h1>Streaming</h1>
+  <input id="search" placeholder="Buscar canal" />
+</header>
+
+<div class="player" id="playerBox" style="display:none">
+  <video id="video" controls autoplay></video>
+  <p id="playingName"></p>
+</div>
+
+<div id="content"></div>
+
+<div class="footer">Use apenas streams que você tenha autorização legal.</div>
 
 <script>
-fetch("/api/canais")
-  .then(res => res.json())
-  .then(data => {
-    const grid = document.getElementById("grid");
-    data.forEach(c => {
-      const card = document.createElement("div");
-      card.className = "card";
-      card.innerHTML = `<p>${c.nome}</p>`;
-      card.onclick = () => {
-        window.open(c.url, "_blank");
-      };
-      grid.appendChild(card);
-    });
-  });
-</script>
+  // ==============================
+  // CONFIGURAÇÃO PERFORMANCE
+  // ==============================
+  const M3U_URL = "http://gcorecdns.xyz:80/get.php?username=110453920&password=467071310&type=m3u_plus&output=mpegts";
+  const CACHE_KEY = 'm3u_cache_v1';
+  const CACHE_TIME = 1000 * 60 * 60; // 1 hora
+  const VIRTUAL_BATCH = 30; // virtualização por lote
 
+  let ALL_GROUPS = {};
+
+  // ==============================
+  // PARSER
+  // ==============================
+  function parseM3U(text) {
+    const lines = text.split(/\r?\n/);
+    const items = [];
+    let current = null;
+
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
+
+      if (line.startsWith('#EXTINF')) {
+        const groupMatch = line.match(/group-title="([^"]+)"|tvg-group="([^"]+)"/i);
+        const nameMatch = line.match(/,(.*)$/);
+        current = {
+          name: nameMatch ? nameMatch[1].trim() : 'Canal',
+          group: groupMatch ? (groupMatch[1] || groupMatch[2]) : 'Outros',
+          logo: (line.match(/tvg-logo="([^"]+)"/i) || [])[1] || '',
+          url: ''
+        };
+      } else if (!line.startsWith('#') && current) {
+        current.url = line;
+        items.push(current);
+        current = null;
+      }
+    }
+    return items;
+  }
+
+  // ==============================
+  // CACHE LOCAL
+  // ==============================
+  async function loadM3U() {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Date.now() - parsed.time < CACHE_TIME) {
+        ALL_GROUPS = parsed.data;
+        renderVirtual(ALL_GROUPS);
+        return;
+      }
+    }
+
+    const res = await fetch(M3U_URL);
+    const text = await res.text();
+    const data = parseM3U(text);
+
+    const novidades = data.slice(-20).reverse();
+    const groups = { 'Novidades': novidades };
+    data.forEach(c => {
+      if (!groups[c.group]) groups[c.group] = [];
+      groups[c.group].push(c);
+    });
+
+    ALL_GROUPS = groups;
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ time: Date.now(), data: groups }));
+    renderVirtual(groups);
+  }
+
+  // ==============================
+  // VIRTUALIZAÇÃO
+  // ==============================
+  function renderVirtual(groups) {
+    const content = document.getElementById('content');
+    content.innerHTML = '';
+
+    Object.keys(groups).forEach(group => {
+      const section = document.createElement('div');
+      section.className = 'category';
+      section.innerHTML = `<h2>${group}</h2>`;
+
+      const grid = document.createElement('div');
+      grid.className = 'grid';
+      section.appendChild(grid);
+      content.appendChild(section);
+
+      let index = 0;
+      function loadMore() {
+        const slice = groups[group].slice(index, index + VIRTUAL_BATCH);
+        slice.forEach(c => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <img class="logo" loading="lazy" src="${c.logo || 'https://via.placeholder.com/300x200?text=Sem+Logo'}" />
+            <div class="name">${c.name}</div>
+          `;
+          card.onclick = () => play(c);
+          grid.appendChild(card);
+        });
+        index += VIRTUAL_BATCH;
+      }
+
+      loadMore();
+
+      const observer = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) loadMore();
+      });
+
+      const sentinel = document.createElement('div');
+      observer.observe(sentinel);
+      section.appendChild(sentinel);
+    });
+  }
+
+  // ==============================
+  // BUSCA
+  // ==============================
+  function debounce(fn, delay = 300) {
+    let t;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), delay);
+    };
+  }
+
+  document.getElementById('search').addEventListener('input', debounce(e => {
+    const term = e.target.value.toLowerCase();
+    if (!term) return renderVirtual(ALL_GROUPS);
+
+    const filtered = {};
+    Object.keys(ALL_GROUPS).forEach(g => {
+      const f = ALL_GROUPS[g].filter(c => c.name.toLowerCase().includes(term));
+      if (f.length) filtered[g] = f;
+    });
+    renderVirtual(filtered);
+  }, 300));
+
+  // ==============================
+  // PLAYER
+  // ==============================
+  function play(channel) {
+    const video = document.getElementById('video');
+    const box = document.getElementById('playerBox');
+    const name = document.getElementById('playingName');
+
+    name.textContent = 'Assistindo: ' + channel.name;
+    box.style.display = 'block';
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({ enableWorker: true });
+      hls.loadSource(channel.url);
+      hls.attachMedia(video);
+    } else {
+      video.src = channel.url;
+    }
+  }
+
+  loadM3U();
+</script>
 </body>
 </html>
